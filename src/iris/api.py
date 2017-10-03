@@ -3150,11 +3150,11 @@ class ResponseEmail(ResponseMixin):
                         return
 
                     # Get incidents from the last N hours
-                    if config['owa'].get('incident_lookback_time'):
-                      lookback_hours = config['owa'].get('incident_lookback_time')
-                    else:
-                      lookback_hours = 24
-                    query = 'SELECT context FROM `incident` WHERE `created` >= (NOW() - INTERVAL ' + lookback_hours  + ' hour)'
+                    config = load_config()
+                    lookback_hours = 24
+                    if config.get('owa'):
+                      lookback_hours = config['owa'].get('incident_lookback_time', 24)
+                    query = 'SELECT context FROM `incident` WHERE `created` >= (NOW() - INTERVAL ' + str(lookback_hours)  + ' hour)'
                     recent_incidents = session.execute(query).fetchall()
 
                     # Check the uniqueness of the email message. Don't create an incident if this thread has already created an incident in <= lookback_hours
