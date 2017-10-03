@@ -3084,18 +3084,24 @@ class ResponseMixin(object):
 
 class ResponseEmail(ResponseMixin):
     def on_post(self, req, resp):
-        gmail_params = ujson.loads(req.context['body'])
-        email_headers = {header['name']: header['value'] for header in gmail_params['headers']}
+        email_params = ujson.loads(req.context['body'])
+        email_headers = {header['name']: header['value'] for header in email_params['headers']}
         subject = email_headers.get('Subject')
         source = email_headers.get('From')
         if not source:
-            msg = 'No source found in headers: %s' % gmail_params['headers']
+            msg = 'No source found in headers: %s' % email_params['headers']
             raise HTTPBadRequest('Missing source', msg)
         to = email_headers.get('To')
         # source is in the format of "First Last <user@email.com>",
         # but we only want the email part
         source = source.split(' ')[-1].strip('<>')
-        content = gmail_params['body'].strip()
+        content = email_params['body'].strip()
+        # Grab the Exchange Thread-Index header if it exists. This can be used to track a unique email thread
+        thread_id = email_headers.get('Thread-Index',None)
+        if thread_id is not None:
+          bytes = bytearray(base64.b64decode(thread_id))
+          thread_id = binascii.hexlify(bytes[6:22])
+
 
         # Some people want to use emails to create iris incidents. Facilitate this.
         if to:
@@ -3143,23 +3149,47 @@ class ResponseEmail(ResponseMixin):
                                         'Not created (no template actions for this app)')
                         return
 
-                    incident_info = {
-                        'application_id': email_check_result['application_id'],
-                        'created': datetime.datetime.utcnow(),
-                        'plan_id': email_check_result['plan_id'],
-                        'context': ujson.dumps({'body': content, 'email': to, 'subject': subject})
-                    }
-                    incident_id = session.execute(
-                        '''INSERT INTO `incident` (`plan_id`, `created`, `context`,
-                                                `current_step`, `active`, `application_id`)
-                        VALUES (:plan_id, :created, :context, 0, TRUE, :application_id) ''',
-                        incident_info).lastrowid
-                    session.commit()
-                    session.close()
-                    resp.status = HTTP_204
-                    # Pass the new incident id back through a header so we can test this
-                    resp.set_header('X-IRIS-INCIDENT', incident_id)
-                    return
+                    # Get incidents from the last N hours
+                    if config['owa'].get('incident_lookback_time'):
+                      lookback_hours = config['owa'].get('incident_lookback_time')
+                    else:
+                      lookback_hours = 24
+                    query = 'SELECT context FROM `incident` WHERE `created` >= (NOW() - INTERVAL ' + lookback_hours  + ' hour)'
+                    recent_incidents = session.execute(query).fetchall()
+
+                    # Check the uniqueness of the email message. Don't create an incident if this thread has already created an incident in <= lookback_hours
+                    duplicate_thread = False
+                    for row in recent_incidents:
+                        context = ujson.loads(row[0])
+                        if 'thread_id' in context:
+                                if context['thread_id'] == thread_id:
+                                  logger.warn("Incident already exists with email thread_id of " + thread_id + ". Not making an incident for this email message.")
+                                  duplicate_thread = True
+                                  break
+
+
+                    # If this email thread hasn't been seen in the last lookback_hours hours, do create an incident
+                    if not duplicate_thread:
+                      incident_info = {
+                          'application_id': email_check_result['application_id'],
+                          'created': datetime.datetime.utcnow(),
+                          'plan_id': email_check_result['plan_id'],
+                          'context': ujson.dumps({'body': content, 'email': to, 'subject': subject,'thread_id': thread_id})
+                      }
+                      incident_id = session.execute(
+                          '''INSERT INTO `incident` (`plan_id`, `created`, `context`,
+                                                  `current_step`, `active`, `application_id`)
+                          VALUES (:plan_id, :created, :context, 0, TRUE, :application_id) ''',
+                          incident_info).lastrowid
+                      session.commit()
+                      session.close()
+                      # Pass the new incident id back through a header so we can test this
+                      resp.set_header('X-IRIS-INCIDENT', incident_id)
+                      resp.status = HTTP_204
+                      return
+                    else:
+                      resp.status = HTTP_204
+                      return
 
                 session.close()
 
