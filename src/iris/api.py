@@ -15,6 +15,7 @@ import os
 import datetime
 import logging
 import jinja2
+import binascii
 from jinja2.sandbox import SandboxedEnvironment
 from urlparse import parse_qs
 import ujson
@@ -3279,9 +3280,10 @@ class ResponseEmail(ResponseMixin):
                                         'Not created (no template actions for this app)')
                         return
 
-                    # Get incidents from the last N hours
+                    # Get incidents from the last N hours where N is the config key of [owa][incident_lookback_time]. Keep this to a short time range for performance reasons
                     config = load_config()
                     lookback_hours = 24
+
                     if config.get('owa'):
                       lookback_hours = config['owa'].get('incident_lookback_time', 24)
                     query = 'SELECT context FROM `incident` WHERE `created` >= (NOW() - INTERVAL ' + str(lookback_hours)  + ' hour)'
