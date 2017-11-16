@@ -131,12 +131,22 @@ def relay(message, iris_client):
         metrics.incr('message_ignore_count')
         return
 
+    # Grab the thread index from the message if it exists. Will use this to track the uniqueness of a thread. Only works for OWA/Exchange
+    thread_index = None
+    for header in headers:
+      if header['name'] == 'Thread-Index':
+        thread_index = header['value']
+
     # To and From headers are strangely missing
     if message.to_recipients:
         headers.append({'name': 'To', 'value': message.to_recipients[0].email_address})
     headers.append({'name': 'From', 'value': message.sender.email_address})
 
-    data = {'headers': headers, 'body': message.text_body.strip()}
+    # Thread-Index is an OWA-only header so we need to check if it even exists
+    if thread_index is not None:
+      data = {'headers': headers, 'thread_index': thread_index, 'body': message.text_body.strip()}
+    else:
+      data = {'headers': headers, 'body': message.text_body.strip()}
 
     try:
         req = iris_client.post('response/email', json=data)
